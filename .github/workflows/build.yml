@@ -1,0 +1,58 @@
+name: build
+# Офлайн-установщики Entware для Keenetic (aarch64, mipsel, mips).
+#
+# На pull request и push в main: тесты, shellcheck, сборка трёх архитектур и
+# установка каждой без сети в chroot через qemu. Публикации нет.
+# По понедельникам и по ручному запуску на main: то же плюс выпуск релиза,
+# если состав пакетов изменился (publish.sh).
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # Понедельник 03:23 UTC — минута не :00, чтобы не толкаться в толпе cron'ов.
+    - cron: "23 3 * * 1"
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    name: tests, build, offline install, publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: shellcheck
+        # Порог warning: на info-уровне вердикт зависит от версии shellcheck на раннере.
+        run: shellcheck -s sh -S warning build.sh smoke.sh publish.sh tests/*.sh
+      - name: tests
+        run: |
+          set -eu
+          sh tests/test_build.sh
+          sh tests/test_publish.sh
+      - name: qemu for the offline install check
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-user-static
+      - name: build
+        run: |
+          set -eu
+          mkdir -p out
+          for a in aarch64 mipsel mips; do sh build.sh "$a" out; done
+          ls -l out
+      - name: offline install (no network)
+        run: |
+          set -eu
+          for f in out/*-installer.tar.gz; do sudo sh smoke.sh "$f"; done
+      - name: publish when the package set changed
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: sh publish.sh out
