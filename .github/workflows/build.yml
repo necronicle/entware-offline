@@ -4,7 +4,11 @@ name: build
 # На pull request и push в main: тесты, shellcheck, сборка трёх архитектур и
 # установка каждой без сети в chroot через qemu. Публикации нет.
 # По понедельникам и по ручному запуску на main: то же плюс выпуск релиза,
-# если состав пакетов изменился (publish.sh).
+# если состав пакетов или сборщик изменились (publish.sh).
+#
+# Две задачи, а не одна: smoke.sh запускает под root скачанные с bin.entware.net
+# бинарники и их скрипты. Токен с правом записи в репозиторий им видеть незачем —
+# он есть только у задачи publish, которая чужой код не исполняет.
 on:
   pull_request:
   push:
@@ -20,11 +24,11 @@ concurrency:
   cancel-in-progress: false
 jobs:
   build:
-    name: tests, build, offline install, publish
+    name: tests, build, offline install
     runs-on: ubuntu-latest
     timeout-minutes: 40
     permissions:
-      contents: write
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -51,8 +55,35 @@ jobs:
         run: |
           set -eu
           for f in out/*-installer.tar.gz; do sudo sh smoke.sh "$f"; done
-      - name: publish when the package set changed
-        if: github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: installers
+          path: out/
+          if-no-files-found: error
+          retention-days: 3
+  publish:
+    name: publish when the package set changed
+    needs: build
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: installers
+          path: out
+      - name: publish
         run: sh publish.sh out
+      - name: keep the schedule alive
+        # GitHub отключает расписание в публичном репозитории после 60 дней без
+        # коммитов, а коммитов здесь в норме нет. Включение workflow через API
+        # сбрасывает этот отсчёт.
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/build.yml/enable"
