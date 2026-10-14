@@ -6,7 +6,8 @@
 #   - ALL.manifest совпал с Latest → выход без релиза, код 0;
 #   - состав изменился, тег даты занят → тег с суффиксом -2, потом -3;
 #   - в релиз уходят 10 файлов: 3 архива, 3 манифеста, 3 diff, ALL.manifest;
-#   - в заметках есть SHA256 всех трёх архивов, версия busybox и ссылка latest/download.
+#   - в заметках есть SHA256 всех трёх архивов, версия busybox и ссылки на файлы ЭТОГО релиза;
+#   - в ALL.manifest входит sha256 сборщика (BUILD_SH): правка build.sh = новый релиз.
 # POSIX sh.
 PASS=0; FAIL=0
 ok()  { PASS=$((PASS + 1)); printf '[PASS] %s\n' "$1"; }
@@ -17,6 +18,8 @@ SB=$(mktemp -d) || exit 1
 trap 'rm -rf "$SB"' EXIT
 export GITHUB_REPOSITORY=necronicle/entware-offline GH_FAKE="$SB/gh" PATH="$SB/bin:$PATH"
 TODAY=$(date -u +%Y-%m-%d)
+# Сборщик для строки recipe в ALL.manifest — копия, которую тест меняет в п. 5.
+cp "$ROOT/build.sh" "$SB/build.sh"; export BUILD_SH="$SB/build.sh"
 
 # Поддельный gh: релизы — каталоги $GH_FAKE/releases/<тег>, Latest — файл $GH_FAKE/latest.
 mkdir -p "$SB/bin" "$GH_FAKE/releases"
@@ -73,7 +76,8 @@ eq "первый выпуск: сказано" "1" "$(grep -c "выпущен $T
 N="$GH_FAKE/releases/$TODAY/.notes"
 eq "заметки: три суммы" "3" "$(grep -c -- '-installer.tar.gz$' "$N")"
 eq "заметки: версия busybox" "1" "$(grep -c 'busybox 1.37.0-6' "$N")"
-eq "заметки: ссылка latest/download" "1" "$(grep -c 'releases/latest/download/aarch64-installer.tar.gz' "$N")"
+eq "заметки: ссылки — на файлы этого релиза, не latest" "3" "$(grep -c "releases/download/$TODAY/" "$N")"
+eq "заметки: ссылок на latest нет" "0" "$(grep -c 'releases/latest' "$N")"
 
 # --- 2. состав не изменился → релиза нет ---------------------------------------
 mk_out 1.37.0-6
@@ -94,6 +98,14 @@ eq "второй за день: старый релиз цел" "yes" "$([ -f "$
 mk_out 1.37.0-8
 run; rc=$?
 eq "третий за день: тег -3" "yes" "$([ -d "$GH_FAKE/releases/$TODAY-3" ] && echo yes || echo no)"
+
+# --- 5. состав тот же, изменился сборщик → новый релиз ---------------------------
+eq "ALL.manifest: есть строка recipe" "1" "$(grep -c '^recipe	' "$GH_FAKE/releases/$TODAY-3/ALL.manifest")"
+printf '# правка сборщика\n' >> "$BUILD_SH"
+run; rc=$?
+eq "смена сборщика: rc 0" "0" "$rc"
+eq "смена сборщика: тег -4" "yes" "$([ -d "$GH_FAKE/releases/$TODAY-4" ] && echo yes || echo no)"
+eq "смена сборщика: recipe в манифесте другой" "yes" "$(cmp -s "$GH_FAKE/releases/$TODAY-3/ALL.manifest" "$GH_FAKE/releases/$TODAY-4/ALL.manifest" && echo no || echo yes)"
 
 printf '\nPASSED: %d\nFAILED: %d\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
